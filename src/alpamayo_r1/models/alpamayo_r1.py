@@ -117,6 +117,14 @@ class AlpamayoR1(ReasoningVLA):
             self.action_in_proj = self.action_in_proj.to(dtype=expert_dtype)
             self.action_out_proj = self.action_out_proj.to(dtype=expert_dtype)
 
+        # If VLM was loaded with device_map="auto" (quantized), move other modules to match
+        if config.is_quantized and hasattr(self.vlm, "device"):
+            target_device = self.vlm.device
+            self.expert = self.expert.to(target_device)
+            self.diffusion = self.diffusion.to(target_device)
+            self.action_in_proj = self.action_in_proj.to(target_device)
+            self.action_out_proj = self.action_out_proj.to(target_device)
+
         self.post_init()
 
     def sample_trajectories_from_data_with_vlm_rollout(

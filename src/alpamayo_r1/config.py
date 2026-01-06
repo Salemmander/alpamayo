@@ -15,7 +15,7 @@
 
 """Configuration classes for Alpamayo R1 release models."""
 
-from typing import Any
+from typing import Any, Literal
 
 from alpamayo_r1.models.base_model import ReasoningVLAConfig
 
@@ -34,9 +34,15 @@ class AlpamayoR1Config(ReasoningVLAConfig):
         expert_cfg: dict[str, Any] | None = None,
         keep_same_dtype: bool = True,
         expert_non_causal_attention: bool = True,
+        quantization_mode: Literal["none", "8bit", "4bit"] | None = None,
+        quantization_cfg: dict[str, Any] | None = None,
         **kwargs: Any,
     ) -> None:
-        super().__init__(**kwargs)
+        super().__init__(
+            quantization_mode=quantization_mode,
+            quantization_cfg=quantization_cfg,
+            **kwargs,
+        )
         self.diffusion_cfg = diffusion_cfg
         self.action_space_cfg = action_space_cfg
         self.action_in_proj_cfg = action_in_proj_cfg

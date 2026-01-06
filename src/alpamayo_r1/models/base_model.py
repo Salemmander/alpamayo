@@ -16,7 +16,7 @@
 """Base Reasoning VLA model implementation for Alpamayo R1 release."""
 
 import logging
-from typing import Any
+from typing import Any, Literal
 
 import einops
 import hydra.utils as hyu
@@ -216,6 +216,8 @@ class ReasoningVLAConfig(PretrainedConfig):
         min_pixels: int | None = None,
         max_pixels: int | None = None,
         add_special_tokens: bool = False,
+        quantization_mode: Literal["none", "8bit", "4bit"] | None = None,
+        quantization_cfg: dict[str, Any] | None = None,
         **kwargs: Any,
     ) -> None:
         super().__init__(**kwargs)
@@ -234,6 +236,10 @@ class ReasoningVLAConfig(PretrainedConfig):
         self.min_pixels = min_pixels
         self.max_pixels = max_pixels
         self.add_special_tokens = add_special_tokens
+
+        # Quantization settings
+        self.quantization_mode = quantization_mode or "none"
+        self.quantization_cfg = quantization_cfg or {}
 
         # Initialize VLM-specific configurations
         self._initialize_vlm_config()
@@ -280,6 +286,44 @@ class ReasoningVLAConfig(PretrainedConfig):
         }
 
         return processor
+
+    def get_quantization_config(self) -> "BitsAndBytesConfig | None":
+        """Build a BitsAndBytesConfig if quantization is enabled.
+
+        Returns:
+            BitsAndBytesConfig for 8bit/4bit quantization, or None if disabled.
+        """
+        if self.quantization_mode == "none":
+            return None
+
+        from transformers import BitsAndBytesConfig
+
+        if self.quantization_mode == "8bit":
+            return BitsAndBytesConfig(
+                load_in_8bit=True,
+                llm_int8_threshold=self.quantization_cfg.get("llm_int8_threshold", 6.0),
+                llm_int8_skip_modules=self.quantization_cfg.get("llm_int8_skip_modules", None),
+                llm_int8_enable_fp32_cpu_offload=self.quantization_cfg.get(
+                    "llm_int8_enable_fp32_cpu_offload", False
+                ),
+                llm_int8_has_fp16_weight=self.quantization_cfg.get("llm_int8_has_fp16_weight", False),
+            )
+        elif self.quantization_mode == "4bit":
+            return BitsAndBytesConfig(
+                load_in_4bit=True,
+                bnb_4bit_compute_dtype=getattr(
+                    torch, self.quantization_cfg.get("bnb_4bit_compute_dtype", "bfloat16")
+                ),
+                bnb_4bit_quant_type=self.quantization_cfg.get("bnb_4bit_quant_type", "nf4"),
+                bnb_4bit_use_double_quant=self.quantization_cfg.get("bnb_4bit_use_double_quant", True),
+            )
+        else:
+            raise ValueError(f"Unknown quantization_mode: {self.quantization_mode}")
+
+    @property
+    def is_quantized(self) -> bool:
+        """Return True if quantization is enabled."""
+        return self.quantization_mode in ("8bit", "4bit")
 
 
 class ReasoningVLA(PreTrainedModel, TrajectoryFusionMixin):
@@ -408,11 +452,27 @@ class ReasoningVLA(PreTrainedModel, TrajectoryFusionMixin):
         """Load submodules with pretrained submodules and initialize the model."""
         pretrained_modules = {}
 
+        # Build quantization config if enabled
+        quantization_config = config.get_quantization_config()
+
+        # Prepare load kwargs
+        load_kwargs: dict[str, Any] = {
+            "attn_implementation": config.attn_implementation,
+        }
+
+        if quantization_config is not None:
+            # When quantizing, use device_map="auto" and pass quantization_config
+            load_kwargs["quantization_config"] = quantization_config
+            load_kwargs["device_map"] = "auto"
+            logger.info(f"Loading VLM with {config.quantization_mode} quantization")
+        else:
+            # Standard loading with explicit dtype
+            load_kwargs["torch_dtype"] = getattr(torch, config.model_dtype)
+
         # Load VLM
         vlm = Qwen3VLForConditionalGeneration.from_pretrained(
             config.vlm_name_or_path,
-            dtype=config.model_dtype,
-            attn_implementation=config.attn_implementation,
+            **load_kwargs,
         )
 
         original_vocab_size = vlm.config.text_config.vocab_size
@@ -429,6 +489,66 @@ class ReasoningVLA(PreTrainedModel, TrajectoryFusionMixin):
             config,
             pretrained_modules=pretrained_modules,
             original_vocab_size=original_vocab_size,
+        )
+
+    @classmethod
+    def from_pretrained(
+        cls,
+        pretrained_model_name_or_path: str,
+        *model_args: Any,
+        quantization_mode: Literal["none", "8bit", "4bit"] | None = None,
+        quantization_cfg: dict[str, Any] | None = None,
+        **kwargs: Any,
+    ) -> "ReasoningVLA":
+        """Load a pretrained model with optional quantization support.
+
+        Args:
+            pretrained_model_name_or_path: Path or HuggingFace model hub identifier.
+            quantization_mode: "none" (default), "8bit", or "4bit".
+            quantization_cfg: Additional bitsandbytes configuration options.
+            **kwargs: Additional arguments passed to the parent from_pretrained.
+
+        Returns:
+            The loaded model instance.
+
+        Example:
+            # Standard loading
+            model = AlpamayoR1.from_pretrained("nvidia/Alpamayo-R1-10B", dtype=torch.bfloat16)
+
+            # 8-bit quantized loading
+            model = AlpamayoR1.from_pretrained(
+                "nvidia/Alpamayo-R1-10B",
+                quantization_mode="8bit",
+            )
+        """
+        quantization_mode = quantization_mode or "none"
+        quantization_cfg = quantization_cfg or {}
+
+        if quantization_mode != "none":
+            # Load config first to build quantization settings
+            config = cls.config_class.from_pretrained(
+                pretrained_model_name_or_path,
+                quantization_mode=quantization_mode,
+                quantization_cfg=quantization_cfg,
+                **{k: v for k, v in kwargs.items() if k in ["attn_implementation", "model_dtype"]},
+            )
+
+            # Build quantization config
+            bnb_config = config.get_quantization_config()
+
+            # Update kwargs for parent from_pretrained
+            kwargs["quantization_config"] = bnb_config
+            kwargs["device_map"] = kwargs.get("device_map", "auto")
+            kwargs.pop("dtype", None)  # Remove dtype as it conflicts with quantization
+            kwargs.pop("torch_dtype", None)
+
+            logger.info(f"Loading model with {quantization_mode} quantization")
+
+        # Call parent's from_pretrained
+        return super().from_pretrained(
+            pretrained_model_name_or_path,
+            *model_args,
+            **kwargs,
         )
 
     def get_output_embeddings(self) -> torch.nn.Module:
