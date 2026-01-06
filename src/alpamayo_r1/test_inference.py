@@ -28,7 +28,8 @@ from alpamayo_r1 import helper
 # Example clip ID
 clip_id = "030c760c-ae38-49aa-9ad8-f5650a545d26"
 print(f"Loading dataset for clip_id: {clip_id}...")
-data = load_physical_aiavdataset(clip_id, t0_us=5_100_000)
+# Reduce num_frames from 4 to 2 for lower VRAM usage
+data = load_physical_aiavdataset(clip_id, t0_us=5_100_000, num_frames=2)
 print("Dataset loaded.")
 messages = helper.create_message(data["image_frames"].flatten(0, 1))
 
@@ -59,6 +60,9 @@ model_inputs = {
 
 model_inputs = helper.to_device(model_inputs, "cuda")
 
+# Clear cache before inference to maximize available VRAM
+torch.cuda.empty_cache()
+
 torch.cuda.manual_seed_all(42)
 with torch.autocast("cuda", dtype=torch.bfloat16):
     pred_xyz, pred_rot, extra = model.sample_trajectories_from_data_with_vlm_rollout(
@@ -66,7 +70,7 @@ with torch.autocast("cuda", dtype=torch.bfloat16):
         top_p=0.98,
         temperature=0.6,
         num_traj_samples=1,  # Feel free to raise this for more output trajectories and CoC traces.
-        max_generation_length=256,
+        max_generation_length=128,  # Reduced from 256 for lower VRAM usage
         return_extra=True,
     )
 
