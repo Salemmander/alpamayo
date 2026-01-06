@@ -461,9 +461,9 @@ class ReasoningVLA(PreTrainedModel, TrajectoryFusionMixin):
         }
 
         if quantization_config is not None:
-            # When quantizing, use device_map="auto" and pass quantization_config
+            # When quantizing, use explicit cuda:0 to avoid conservative CPU offloading
             load_kwargs["quantization_config"] = quantization_config
-            load_kwargs["device_map"] = "auto"
+            load_kwargs["device_map"] = {"": "cuda:0"}
             logger.info(f"Loading VLM with {config.quantization_mode} quantization")
         else:
             # Standard loading with explicit dtype
@@ -538,7 +538,8 @@ class ReasoningVLA(PreTrainedModel, TrajectoryFusionMixin):
 
             # Update kwargs for parent from_pretrained
             kwargs["quantization_config"] = bnb_config
-            kwargs["device_map"] = kwargs.get("device_map", "auto")
+            # Use explicit cuda:0 instead of "auto" to avoid conservative CPU offloading
+            kwargs["device_map"] = kwargs.get("device_map", {"": "cuda:0"})
             kwargs.pop("dtype", None)  # Remove dtype as it conflicts with quantization
             kwargs.pop("torch_dtype", None)
 
