@@ -32,9 +32,12 @@ data = load_physical_aiavdataset(clip_id, t0_us=5_100_000)
 print("Dataset loaded.")
 messages = helper.create_message(data["image_frames"].flatten(0, 1))
 
-# 8-bit quantized loading (for 10GB VRAM GPUs like RTX 3080)
-# No .to("cuda") needed - device_map="auto" handles placement
-model = AlpamayoR1.from_pretrained("nvidia/Alpamayo-R1-10B", quantization_mode="8bit")
+# 4-bit quantized loading (for 10GB VRAM GPUs like RTX 3080)
+# No .to("cuda") needed - device_map handles placement
+model = AlpamayoR1.from_pretrained("nvidia/Alpamayo-R1-10B", quantization_mode="4bit")
+
+# 8-bit quantized loading (requires ~12GB VRAM):
+# model = AlpamayoR1.from_pretrained("nvidia/Alpamayo-R1-10B", quantization_mode="8bit")
 
 # Standard loading (requires 20GB+ VRAM):
 # model = AlpamayoR1.from_pretrained("nvidia/Alpamayo-R1-10B", dtype=torch.bfloat16).to("cuda")
